@@ -69,13 +69,6 @@
       }
     });
   
-    function updateButton() {
-      if (!gamestarted) {
-        mute.textContent = audio.muted ? '🔊' : '🔇';
-      }
-    }
-  
-    updateButton();
 
     function loadChapter(chapter) {
       fetch(`chapter${chapter}/index.html`).then(res => res.text()).then(html => {
