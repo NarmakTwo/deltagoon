@@ -5,7 +5,7 @@ everything should be working.
 [https://katsugachi.github.io/deltarune/](https://katsugachi.github.io/deltarune/)<br>
 Want this in your own site? <br>
 should work through iframe https://katsugachi.github.io/deltarune/<br>
-Download `deltarune.html` <br>
+Download `deltarune.html` and add it to the directory <br>
 # Downloading
 uhh just download deltarune.html if you want play WITH internet <br><br>
 to play without internet, `git clone https://github.com/Katsugachi/deltarune/` <br><br>
