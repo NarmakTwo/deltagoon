@@ -1,6 +1,6 @@
 very meticulously made deltarune chapter 5 wasm webport
 ## Added Chapter 5.
-everything should be working.
+everything should be working... except sound in chapter 5.
 ## Deployed at
 [https://katsugachi.github.io/deltarune/](https://katsugachi.github.io/deltarune/)<br>
 Want this in your own site? <br>
