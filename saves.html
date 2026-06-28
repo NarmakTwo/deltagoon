@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .saves-container {
+      width: min(90vw, 600px);
+      text-align: center;
+    }
+
+    .saves-title {
+      font-size: 48px;
+      margin-bottom: 40px;
+      color: #fefe00;
+      transform: scaleY(1.1);
+      transform-origin: bottom;
+      display: inline-block;
+    }
+
+    .saves-options {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      margin-bottom: 40px;
+    }
+
+    .back-btn {
+      margin-top: 20px;
+      color: #aaa !important;
+    }
+
+    .back-btn:hover {
+      color: #fff !important;
+    }
+
+    .title {
+      padding-left: 40px;
+      max-width: 100%;
+    }
+
+    #delete {
+      color: #d51919 !important;
+    }
+  </style>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <script>
+    async function exportSaves() {
+      try {
+        const zip = new JSZip();
+
+        if (!window.indexedDB.databases) {
+          alert("Your browser does not support listing databases. Make sure you are using a modern browser.");
+          return;
+        }
+
+        const dbs = await window.indexedDB.databases();
+        let totalFiles = 0;
+
+        for (const dbInfo of dbs) {
+          const dbName = dbInfo.name;
+          const db = await new Promise((resolve) => {
+            const req = window.indexedDB.open(dbName);
+            req.onerror = () => resolve(null);
+            req.onsuccess = () => resolve(req.result);
+          });
+
+          if (!db) continue;
+
+          let zipDbName = dbName;
+          while (zipDbName.startsWith("/")) zipDbName = zipDbName.substring(1);
+
+          const storeNames = Array.from(db.objectStoreNames);
+          for (const storeName of storeNames) {
+            const result = await new Promise((resolve) => {
+              const tx = db.transaction([storeName], "readonly");
+              const store = tx.objectStore(storeName);
+              const getReq = store.getAll();
+              const getKeysReq = store.getAllKeys();
+
+              let completed = 0;
+              const check = () => {
+                completed++;
+                if (completed === 2) {
+                  const items = getReq.result;
+                  const keys = getKeysReq.result;
+                  resolve(keys.map((key, index) => ({ key, data: items[index] })));
+                }
+              };
+
+              getReq.onsuccess = check;
+              getKeysReq.onsuccess = check;
+              getReq.onerror = () => resolve([]);
+              getKeysReq.onerror = () => resolve([]);
+            });
+
+            result.forEach(item => {
+              let keyStr = String(item.key);
+              let filename = keyStr.substring(keyStr.lastIndexOf("/") + 1);
+              if (!filename) return;
+
+              let fileData = null;
+              if (item.data) {
+                let rawContents = item.data.contents !== undefined ? item.data.contents : item.data;
+                if (rawContents instanceof Int8Array) {
+                  fileData = new Uint8Array(rawContents.buffer, rawContents.byteOffset, rawContents.byteLength);
+                } else if (rawContents instanceof Uint8Array || rawContents instanceof ArrayBuffer || typeof rawContents === "string") {
+                  fileData = rawContents;
+                } else if (rawContents && rawContents.buffer) {
+                  fileData = new Uint8Array(rawContents.buffer, rawContents.byteOffset, rawContents.byteLength);
+                } else {
+                  fileData = JSON.stringify(rawContents);
+                }
+              }
+
+              if (fileData) {
+                // Always preserve the full key path so imports can reconstruct
+                // the exact same key. Strip leading slashes for zip compatibility.
+                let zipDbName = dbName;
+                while (zipDbName.startsWith("/")) zipDbName = zipDbName.substring(1);
+                let zipStoreName = storeName;
+                while (zipStoreName.startsWith("/")) zipStoreName = zipStoreName.substring(1);
+                let zipKeyStr = keyStr;
+                while (zipKeyStr.startsWith("/")) zipKeyStr = zipKeyStr.substring(1);
+                const zipPath = `${zipDbName}/${zipStoreName}/${zipKeyStr}`;
+                zip.file(zipPath, fileData);
+                totalFiles++;
+              }
+            });
+          }
+          db.close();
+        }
+
+        if (totalFiles === 0) {
+          alert("No saves found to export. Try playing and saving the game first!");
+          return;
+        }
+
+        const blob = await zip.generateAsync({ type: "blob" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "deltarune_saves.zip";
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert("Failed to export saves: " + err.message);
+      }
+    }
+
+    function importSaves() {
+      const fileInput = document.getElementById("file-input");
+      fileInput.click();
+    }
+
+    async function handleFileSelect(event) {
+      const filesList = event.target.files;
+      if (!filesList || filesList.length === 0) return;
+
+      try {
+        const dbStoreMap = {};
+        const firstFile = filesList[0];
+        const isZip = filesList.length === 1 && (firstFile.name.toLowerCase().endsWith(".zip") || firstFile.type === "application/zip" || firstFile.type === "application/x-zip-compressed");
+
+        if (isZip) {
+          const zip = await JSZip.loadAsync(firstFile);
+          zip.forEach((relativePath, zipEntry) => {
+            if (zipEntry.dir) return;
+
+            let dbName, storeName, key;
+
+            if (relativePath.includes("/")) {
+              const parts = relativePath.split("/");
+              if (parts.length >= 3) {
+                dbName = parts[0];
+                if (dbName === "_savedata") dbName = "/_savedata";
+                storeName = parts[1];
+                key = "/" + parts.slice(2).join("/");
+              } else {
+                return;
+              }
+            } else {
+              const filename = relativePath;
+              dbName = "/_savedata";
+              storeName = "FILE_DATA";
+              key = `/_savedata/DELTARUNE/${filename}`;
+            }
+
+            if (!dbStoreMap[dbName]) dbStoreMap[dbName] = {};
+            if (!dbStoreMap[dbName][storeName]) dbStoreMap[dbName][storeName] = [];
+
+            dbStoreMap[dbName][storeName].push({ key, zipEntry });
+          });
+        } else {
+          for (let i = 0; i < filesList.length; i++) {
+            const file = filesList[i];
+            const relativePath = file.webkitRelativePath || file.name;
+            let dbName, storeName, key;
+
+            if (relativePath.includes("/")) {
+              const parts = relativePath.split("/");
+              if (parts.length >= 3) {
+                dbName = parts[0];
+                if (dbName === "_savedata") dbName = "/_savedata";
+                storeName = parts[1];
+                key = "/" + parts.slice(2).join("/");
+              } else {
+                continue;
+              }
+            } else {
+              dbName = "/_savedata";
+              storeName = "FILE_DATA";
+              key = `/_savedata/DELTARUNE/${relativePath}`;
+            }
+
+            if (!dbStoreMap[dbName]) dbStoreMap[dbName] = {};
+            if (!dbStoreMap[dbName][storeName]) dbStoreMap[dbName][storeName] = [];
+
+            dbStoreMap[dbName][storeName].push({ key, file });
+          }
+        }
+
+        const existingDbs = await window.indexedDB.databases();
+        const dbNameMap = {};
+        existingDbs.forEach(dbInfo => {
+          let stripped = dbInfo.name;
+          while (stripped.startsWith("/")) stripped = stripped.substring(1);
+          dbNameMap[stripped] = dbInfo.name;
+        });
+
+        for (const dbName in dbStoreMap) {
+          const actualDbName = dbNameMap[dbName] || (dbName === "_savedata" ? "/_savedata" : dbName);
+          const db = await new Promise((resolve, reject) => {
+            const req = window.indexedDB.open(actualDbName);
+            req.onsuccess = () => {
+              const currentDb = req.result;
+              const missingStores = Object.keys(dbStoreMap[dbName]).filter(s => !currentDb.objectStoreNames.contains(s));
+              if (missingStores.length === 0) {
+                resolve(currentDb);
+              } else {
+                const nextVersion = currentDb.version + 1;
+                currentDb.close();
+
+                const upReq = window.indexedDB.open(actualDbName, nextVersion);
+                upReq.onupgradeneeded = () => {
+                  const upDb = upReq.result;
+                  missingStores.forEach(s => {
+                    upDb.createObjectStore(s);
+                  });
+                };
+                upReq.onsuccess = () => resolve(upReq.result);
+                upReq.onerror = () => reject(new Error("Failed to upgrade DB " + actualDbName));
+              }
+            };
+            req.onerror = () => reject(new Error("Failed to open DB " + actualDbName));
+          });
+
+          for (const storeName in dbStoreMap[dbName]) {
+            const files = dbStoreMap[dbName][storeName];
+
+            // Pre-decode ALL file data before opening the transaction.
+            // IndexedDB transactions auto-commit when no synchronous work is
+            // pending, so any await inside the transaction kills it.
+            const decodedFiles = await Promise.all(
+              files.map(async ({ key, zipEntry, file }) => {
+                let data;
+                if (zipEntry) {
+                  data = await zipEntry.async("uint8array");
+                } else {
+                  data = new Uint8Array(await file.arrayBuffer());
+                }
+                return { key, data };
+              })
+            );
+
+            // Now open the transaction and do all puts synchronously.
+            const tx = db.transaction([storeName], "readwrite");
+            const store = tx.objectStore(storeName);
+
+            for (const { key, data } of decodedFiles) {
+              const fileObject = {
+                timestamp: new Date(),
+                mode: 33206,
+                contents: data
+              };
+              store.put(fileObject, key);
+            }
+
+            await new Promise((resolve) => {
+              tx.oncomplete = resolve;
+              tx.onerror = resolve;
+            });
+          }
+          db.close();
+        }
+
+        alert("Saves imported successfully!");
+        document.getElementById("file-input").value = "";
+      } catch (err) {
+        console.error(err);
+        alert("Failed to import saves: " + err.message);
+      }
+    }
+
+    async function deleteSaves() {
+      if (!confirm("Are you sure you want to delete ALL of your saves? This cannot be undone!")) {
+        return;
+      }
+
+      try {
+        if (!window.indexedDB.databases) {
+          alert("Your browser does not support listing databases.");
+          return;
+        }
+
+        const dbs = await window.indexedDB.databases();
+        for (const dbInfo of dbs) {
+          const dbName = dbInfo.name;
+          const db = await new Promise((resolve) => {
+            const req = window.indexedDB.open(dbName);
+            req.onerror = () => resolve(null);
+            req.onsuccess = () => resolve(req.result);
+          });
+
+          if (!db) continue;
+
+          const storeNames = Array.from(db.objectStoreNames);
+          if (storeNames.length > 0) {
+            const tx = db.transaction(storeNames, "readwrite");
+            storeNames.forEach(storeName => {
+              tx.objectStore(storeName).clear();
+            });
+            await new Promise((resolve) => {
+              tx.oncomplete = resolve;
+              tx.onerror = resolve;
+            });
+          }
+          db.close();
+        }
+        alert("All save files have been deleted.");
+      } catch (err) {
+        console.error(err);
+        alert("Failed to delete saves: " + err.message);
+      }
+    }
+  </script>
+</head>
+
+<body>
+  <audio id="drone" controls="" loop="" autoplay="" hidden="">
+    <source src="chapter5/mus/AUDIO_DRONE.ogg" type="audio/ogg">
+    Your browser does not support the audio element.
+  </audio>
+  <button id="mute" hidden>??</button>
+  <input type="file" id="file-input" style="display: none;" accept=".zip,*" multiple onchange="handleFileSelect(event)">
+  <div class="saves-container">
+    <span class="saves-title">Save Manager</span>
+
+    <div class="saves-options">
+      <a href="javascript:void(0)" onclick="exportSaves()" class="row">
+        <span class="chapter">Export</span>
+        <span class="title">Download saves.zip</span>
+      </a>
+
+      <a href="javascript:void(0)" onclick="importSaves()" class="row">
+        <span class="chapter">Import</span>
+        <span class="title">Upload saves (.zip or files)</span>
+      </a>
+
+      <a href="javascript:void(0)" onclick="deleteSaves()" class="row" id="delete">
+        <span class="chapter">Delete</span>
+        <span class="title">Delete all save files</span>
+      </a>
+    </div>
+
+    <a href="index.html" class="row back-btn">
+      <span class="chapter">Back</span>
+      <span class="title">Return to Menu</span>
+    </a>
+  </div>
+
+  <script>
+    const audio = document.getElementById('drone');
+    if (audio) {
+      audio.muted = false;
+      audio.volume = 1;
+    }
+    const menumoveaudio = new Audio('audios/snd_menumove.mp3');
+    const menuselectaudio = new Audio('audios/snd_select.mp3');
+
+    function playSound(sound) {
+      sound.currentTime = 0;
+      const playPromise = sound.play();
+      if (playPromise) {
+        playPromise.catch(() => { });
+      }
+    }
+
+    let selectedOption = null;
+    const rows = document.querySelectorAll('.row');
+
+    rows.forEach((row, index) => {
+      row.addEventListener('mouseenter', () => {
+        playSound(menumoveaudio);
+        if (selectedOption !== null) {
+          rows[selectedOption].classList.remove("selected");
+        }
+        selectedOption = index;
+        row.classList.add("selected");
+      });
+
+      row.addEventListener('click', () => {
+        playSound(menuselectaudio);
+      });
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'ArrowUp') {
+        if (selectedOption === null) {
+          selectedOption = 0;
+          rows[0].classList.add("selected");
+          playSound(menumoveaudio);
+        } else {
+          rows[selectedOption].classList.remove("selected");
+          selectedOption--;
+          if (selectedOption < 0) {
+            selectedOption = rows.length - 1;
+          }
+          rows[selectedOption].classList.add("selected");
+          playSound(menumoveaudio);
+        }
+      } else if (event.key === 'ArrowDown') {
+        if (selectedOption === null) {
+          selectedOption = 0;
+          rows[0].classList.add("selected");
+          playSound(menumoveaudio);
+        } else {
+          rows[selectedOption].classList.remove("selected");
+          selectedOption++;
+          if (selectedOption >= rows.length) {
+            selectedOption = 0;
+          }
+          rows[selectedOption].classList.add("selected");
+          playSound(menumoveaudio);
+        }
+      } else if (event.key === 'Enter') {
+        if (selectedOption !== null) {
+          rows[selectedOption].click();
+        }
+      }
+    });
+  </script>
+</body>
+
+</html>
