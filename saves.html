@@ -117,18 +117,15 @@
               }
 
               if (fileData) {
-                let zipPath;
-                if (dbName === "/_savedata" && storeName === "FILE_DATA") {
-                  zipPath = filename;
-                } else {
-                  let zipDbName = dbName;
-                  while (zipDbName.startsWith("/")) zipDbName = zipDbName.substring(1);
-                  let zipStoreName = storeName;
-                  while (zipStoreName.startsWith("/")) zipStoreName = zipStoreName.substring(1);
-                  let zipKeyStr = keyStr;
-                  while (zipKeyStr.startsWith("/")) zipKeyStr = zipKeyStr.substring(1);
-                  zipPath = `${zipDbName}/${zipStoreName}/${zipKeyStr}`;
-                }
+                // Always preserve the full key path so imports can reconstruct
+                // the exact same key. Strip leading slashes for zip compatibility.
+                let zipDbName = dbName;
+                while (zipDbName.startsWith("/")) zipDbName = zipDbName.substring(1);
+                let zipStoreName = storeName;
+                while (zipStoreName.startsWith("/")) zipStoreName = zipStoreName.substring(1);
+                let zipKeyStr = keyStr;
+                while (zipKeyStr.startsWith("/")) zipKeyStr = zipKeyStr.substring(1);
+                const zipPath = `${zipDbName}/${zipStoreName}/${zipKeyStr}`;
                 zip.file(zipPath, fileData);
                 totalFiles++;
               }
@@ -190,7 +187,7 @@
               const filename = relativePath;
               dbName = "/_savedata";
               storeName = "FILE_DATA";
-              key = `/_savedata/${filename}`;
+              key = `/_savedata/DELTARUNE/${filename}`;
             }
 
             if (!dbStoreMap[dbName]) dbStoreMap[dbName] = {};
@@ -217,7 +214,7 @@
             } else {
               dbName = "/_savedata";
               storeName = "FILE_DATA";
-              key = `/_savedata/${relativePath}`;
+              key = `/_savedata/DELTARUNE/${relativePath}`;
             }
 
             if (!dbStoreMap[dbName]) dbStoreMap[dbName] = {};
@@ -264,16 +261,27 @@
 
           for (const storeName in dbStoreMap[dbName]) {
             const files = dbStoreMap[dbName][storeName];
+
+            // Pre-decode ALL file data before opening the transaction.
+            // IndexedDB transactions auto-commit when no synchronous work is
+            // pending, so any await inside the transaction kills it.
+            const decodedFiles = await Promise.all(
+              files.map(async ({ key, zipEntry, file }) => {
+                let data;
+                if (zipEntry) {
+                  data = await zipEntry.async("uint8array");
+                } else {
+                  data = new Uint8Array(await file.arrayBuffer());
+                }
+                return { key, data };
+              })
+            );
+
+            // Now open the transaction and do all puts synchronously.
             const tx = db.transaction([storeName], "readwrite");
             const store = tx.objectStore(storeName);
 
-            for (const { key, zipEntry, file } of files) {
-              let data;
-              if (zipEntry) {
-                data = await zipEntry.async("uint8array");
-              } else {
-                data = new Uint8Array(await file.arrayBuffer());
-              }
+            for (const { key, data } of decodedFiles) {
               const fileObject = {
                 timestamp: new Date(),
                 mode: 33206,
